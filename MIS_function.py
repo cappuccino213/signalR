@@ -39,15 +39,6 @@ synergy_rec = {}
 
 # signalR连接
 async def signalr_connection(url):
-	hub_connection = (HubConnectionBuilder()
-					  .with_url(url)
-					  .configure_logging(logging.DEBUG, handler=handler)
-					  .with_automatic_reconnect({
-		"type": "raw",
-		"keep_alive_interval": 10,
-		"reconnect_interval": 5,
-		"max_attempts": 5}).build())
-
 	# 获取连接id
 	def get_connection_id(message):
 		global connection_id
@@ -71,6 +62,15 @@ async def signalr_connection(url):
 		else:
 			logging.info(f"监听到消息{message[0]}")
 
+	hub_connection = (HubConnectionBuilder()
+					  .with_url(url)
+					  .configure_logging(logging.DEBUG, handler=handler)
+					  .with_automatic_reconnect({
+		"type": "raw",
+		"keep_alive_interval": 10,
+		"reconnect_interval": 5,
+		"max_attempts": 5}).build())
+
 	try:
 		# 连接打开时触发
 		hub_connection.on_open(
@@ -81,17 +81,13 @@ async def signalr_connection(url):
 		hub_connection.on("ConnectionID", get_connection_id)
 		hub_connection.on("ReceiveMessage", get_rec_message)
 		await hub_connection.start()
-
-		global connection_id
-		connection_id = hub_connection.url.split('=')[-1]
 	except Exception as e:
 		logging.error(str(e))
 	return hub_connection
 
 
 # MIS创建群组
-async def mis_create_group():
-	conn = await signalr_connection(URL)
+async def mis_create_group(connection):
 	group_name = f"Group-{random.choice(string.ascii_uppercase)}"  # 随机取房间名称
 	user_id = str(uuid4())
 	user_name = fake.name()
@@ -102,45 +98,48 @@ async def mis_create_group():
 									   "strStudyInstanceUID": "1.2.86.76547135.7.11440624.202191013480",
 									   "strDicomDiretoryPath": None, "strQueryJsonUri": None}]},
 			   "ConnectionID": connection_id}
-	await conn.invoke("INVOKE", [message])
+	await connection.invoke("INVOKE", [message])
 	logging.info(
 		f"分享的影像群组url:{Viewer}?strPatientID=CR20211229-00024CR&strAccessionNumber=101&strModality=CR&strStudyInstanceUID=1.2.86.76547135.7.11440624.202191013480&GroupName={group_name}&GroupID={create_group_rec['data']['groupID']}")
 
 
-# return conn
-
-
 # MIS添加群员
-async def mis_add_member():
-	await mis_create_group()
+async def mis_add_member(connection):
+	group_id = create_group_rec['data']['groupID']
+	group_name = create_group_rec['data']['groupName']
+	user_id = str(uuid4())
+	user_name = fake.name()
+	message = {"Command": "MIS_AddGroup",
+			   "Data": {"GroupID": group_id, "GroupName": group_name, "UserID": user_id,
+						"UserName": user_name}, "ConnectionID": connection_id}
 
-	# 多个成员
-	members = 0
-	while members < 10:
-		conn = await signalr_connection(URL)
-		group_id = create_group_rec['data']['groupID']
-		group_name = create_group_rec['data']['groupName']
-		user_id = str(uuid4())
-		user_name = fake.name()
-		message = {"Command": "MIS_AddGroup",
-				   "Data": {"GroupID": group_id, "GroupName": group_name, "UserID": user_id,
-							"UserName": user_name}, "ConnectionID": conn.url.split('=')[-1]}
+	await connection.invoke("INVOKE", [message])
 
-		await conn.invoke("INVOKE", [message])
-		members += 1
+
+"""业务逻辑"""
 
 
 async def main():
-	conn_task = asyncio.create_task(mis_create_group())
-	add_task = asyncio.create_task(mis_add_member())
-	await conn_task
+	conn_task = asyncio.create_task(signalr_connection(URL))
 
-	await add_task
+	create_conn = await conn_task
+
+	create_task = asyncio.create_task(mis_create_group(create_conn))
+
+	await create_task
+
+	task_list = []
+	for i in range(10):
+		add_conn = await asyncio.create_task(signalr_connection(URL))
+		add_task = asyncio.create_task(mis_add_member(add_conn))
+		task_list.append(add_task)
+
+	await asyncio.gather(*task_list)
 
 
 if __name__ == "__main__":
 	"""协程调用参考https://docs.python.org/zh-cn/3/library/asyncio-task.html"""
 	# asyncio.run(signalr_connection(URL))
 	# asyncio.run(mis_create_group())
-	asyncio.run(mis_add_member())
-# asyncio.run(main())
+	# asyncio.run(mis_add_member())
+	asyncio.run(main())

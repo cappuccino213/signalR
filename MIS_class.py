@@ -26,117 +26,97 @@ fake = Faker('en_US')
 class SignalRConnection:
 	def __init__(self, host="http://192.168.1.59:8201/MISFactory"):
 		self.host = host
-		self.hub_connection = (HubConnectionBuilder()
-							   .with_url(self.host)
-							   .configure_logging(logging.DEBUG, handler=handler)
-							   .with_automatic_reconnect({
+		self.connection_id = None  # 建立连接时存储连接id
+		self.create_group_rec_message = None  # 创建群组返回的消息
+		self.add_member_rec_message = None  # 添加成员后返回的消息
+		self.synergy_rec_message = None  # 添加成员后返回的消息
+		self.other_rec_message = None  # 其他事件返回的消息
+
+	# 获取id的回调函数
+	def get_connection_id(self, message):
+		self.connection_id = message[0]
+		logging.info(self.connection_id)
+
+	# 获取signalR消息
+	def get_rec_message(self, message):
+		if message[0]['command'] == 'MIS_Create':
+			self.create_group_rec_message = message[0]
+			logging.info(f"监听到MIS_Create的返回消息:{message}")
+		elif message[0]['command'] == 'MIS_AddGroup':
+			self.add_member_rec_message = message[0]
+			logging.info(f"监听到MIS_AddGroup的返回消息{message}")
+		elif message[0]['command'] == 'MIS_Synergy':
+			self.synergy_rec_message = message[0]
+			logging.info(f"监听到MIS_Synergy的返回消息{message}")
+		else:
+			self.other_rec_message = message[0]
+			logging.info(f"监听到返回消息{message[0]}")
+
+	async def connection_start(self):
+		hub_connection = (HubConnectionBuilder()
+						  .with_url(self.host)
+						  .configure_logging(logging.DEBUG, handler=handler)
+						  .with_automatic_reconnect({
 			"type": "raw",
 			"keep_alive_interval": 10,
 			"reconnect_interval": 5,
 			"max_attempts": 5}).build())
-
-	connection_id = None
-
-	# 获取连接id
-	def get_connection_id(self, message):
-		self.connection_id = message[0]
-		logging.info(message[0])
-
-	# 获取signalR消息
-	# def get_recv_message(self, message):
-	#     self.recv_message = message
-	#     logging.info(f"接收的消息{message}")
-
-	async def connection_start(self):
 		try:
 			# 连接打开时触发
-			self.hub_connection.on_open(
-				lambda: logging.info("connection opened and handshake received ready to send messages"))
+			hub_connection.on_open(
+				lambda: logging.info("连接已打开，握手已接收，准备发送消息..."))
 			# 连接关闭时触发
-			self.hub_connection.on_close(lambda: logging.info("connection closed"))
-			# 接受消息,参数是事件、回调函数
-			self.hub_connection.on("ConnectionID", self.get_connection_id)
-			await self.hub_connection.start()
+			hub_connection.on_close(lambda: logging.info("连接关闭!"))
+			# 监听事件，调用回调函数
+			hub_connection.on("ConnectionID", self.get_connection_id)
+			hub_connection.on("ReceiveMessage", self.get_rec_message)
+			await hub_connection.start()
 		except Exception as e:
 			logging.error(str(e))
 
+		return hub_connection
+
+
 # finally:
-#     await self.hub_connection.stop()
+# 	await self.hub_connection.stop()
 
 
 # MIS创建群组类
-class MISCreateGroup(SignalRConnection):
-	def __init__(self):
-		super().__init__()
-		self.GroupName = f"Group#{random.choice(string.ascii_uppercase)}"  # 随机取房间名称
-		self.UserID = str(uuid4())
-		self.UserName = fake.name()
+class MISCreateGroup:
+	def __init__(self, connection_id):
+		self.group_name = f"Group-{random.choice(string.ascii_uppercase)}"  # 随机取房间名称
+		self.user_id = str(uuid4())
+		self.user_name = fake.name()
 		self.create_req_message = {"Command": "MIS_Create",
-								   "Data": {"GroupName": self.GroupName, "UserName": self.UserName,
-											"UserID": self.UserID,
+								   "Data": {"GroupName": self.group_name, "UserName": self.user_name,
+											"UserID": self.user_id,
 											"StudyList": [
 												{"strPatientID": "0000171564", "strAccessionNumber": "11156070",
 												 "strModality": "DX",
 												 "strStudyInstanceUID": "1.3.51.20211123155502.11156070.359064",
 												 "strDicomDiretoryPath": None, "strQueryJsonUri": None}]},
-								   "ConnectionID": self.connection_id}
-		self.create_recv_message = None
+								   "ConnectionID": connection_id}
 
-	group_data = None
-
-	# # 创建群组信息
-	def create_group_send_message(self):
-		return {"Command": "MIS_Create",
-				"Data": {"GroupName": self.GroupName, "UserName": self.UserName, "UserID": self.UserID,
-						 "StudyList": [{"strPatientID": "0000171564", "strAccessionNumber": "11156070",
-										"strModality": "DX",
-										"strStudyInstanceUID": "1.3.51.20211123155502.11156070.359064",
-										"strDicomDiretoryPath": None, "strQueryJsonUri": None}]},
-				"ConnectionID": self.connection_id}
-
-	# 获取signalR消息
-	def get_recv_message(self, message):
-		if message[0]['data']['code'] == '1':
-			self.create_recv_message = message
-			logging.info(f"操作成功{message}")
-		else:
-			logging.info(f"操作失败{message}")
-
-	# 创建房间
-	async def mis_create_group(self):
+	# 创建群组
+	async def mis_create_group(self, connection, event):
 		try:
-			self.hub_connection.on("ReceiveMessage", self.get_recv_message)
-			await self.connection_start()
-			# await super(MISCreateGroup, self).connection_start()
-			# 判断是否接已接收到connectionID，否则不发送信息
-			# while not self.connection_id:
-			# 	time.sleep(1)
-			# 	logging.info("暂未接收到connection_id,继续等待....")
-			await self.hub_connection.invoke("INVOKE", [self.create_req_message])
-		# self.group_data = self.create_recv_message[0]['data']
-		# logging.info(f"解析得到群组信息{self.group_data}")
+			await event.wait()
+			await connection.invoke("INVOKE", [self.create_req_message])
 		except Exception as e:
 			logging.error(str(e))
 
 
-# MIS增加成员类
-class MISAddGroup(MISCreateGroup):
-	def __init__(self):
-		super().__init__()
-		self.group_id = self.group_data['data']['groupID']
-		self.group_name = self.group_data['data']['groupName']
-		self.user_id = str(uuid4())
-		self.user_name = fake.name()
-		self.add_req_message = {"Command": "MIS_AddGroup",
-								"Data": {"GroupID": self.group_id, "GroupName": self.group_name, "UserID": self.user_id,
-										 "UserName": self.user_name}, "ConnectionID": self.connection_id}
+async def main():
+	create_event = asyncio.Event()
+	sr = SignalRConnection()
+	conn_task = await asyncio.create_task(sr.connection_start())
 
+	create_event.set()
+	mcg = MISCreateGroup(sr.connection_id)
+	mcg_task = await asyncio.create_task(mcg.mis_create_group(conn_task, create_event))
 
-# MIS消息通信类
+	await asyncio.gather(conn_task, mcg_task)
+
 
 if __name__ == '__main__':
-	# sr = SignalRConnection()
-	# asyncio.run(sr.connection_start())
-
-	mcg = MISCreateGroup()
-	asyncio.run(mcg.mis_create_group())
+	asyncio.run(main())
